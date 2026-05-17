@@ -22,3 +22,10 @@ class RegisterSerializer(serializers.ModelSerializer):
             phone_number=validated_data["phone_number"],
         )
         return user
+
+
+class VerifyOTPSerializer(serializers.Serializer):
+
+    email = serializers.EmailField()
+
+    otp = serializers.CharField(max_length=6)
