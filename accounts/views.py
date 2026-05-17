@@ -1,4 +1,5 @@
 from rest_framework.views import APIView
+from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from datetime import timedelta
@@ -7,6 +8,11 @@ from .serializers import RegisterSerializer
 from .utils import generate_otp, send_otp_email
 from .models import OTP,User
 from django.utils import timezone
+from django.contrib.auth import authenticate
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.decorators import permission_classes
+
 
 class RegisterView(APIView):
 
@@ -94,3 +100,73 @@ class VerifyOTPView(APIView):
             )
 
         return Response(serializer.errors)
+
+
+
+
+@api_view(['POST'])
+def login_view(request):
+
+    email = request.data.get('email')
+    password = request.data.get('password')
+
+    try:
+        user = User.objects.get(email=email)
+
+    except User.DoesNotExist:
+
+        return Response({
+            'message': 'User not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+
+    if not user.is_verified:
+
+        return Response({
+            'message': 'Email not verified'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    if not user.is_approved:
+
+        return Response({
+            'message': 'Admin approval pending'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    user = authenticate(
+        username=user.username,
+        password=password
+    )
+
+    if user is None:
+
+        return Response({
+            'message': 'Invalid credentials'
+        }, status=status.HTTP_401_UNAUTHORIZED)
+
+    
+    # created the JWT tokens
+    refresh = RefreshToken.for_user(user)
+
+    return Response({
+
+        'message': 'Login successful',
+
+        'access_token': str(refresh.access_token),
+
+        'refresh_token': str(refresh),
+    })
+
+
+
+
+@api_view(['GET'])
+
+@permission_classes([IsAuthenticated])
+
+def profile_view(request):
+
+    return Response({
+
+        'message': 'Profile accessed',
+
+        'email': request.user.email
+    })
