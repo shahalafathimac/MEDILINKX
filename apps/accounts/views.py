@@ -12,7 +12,7 @@ from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import permission_classes
-
+from .permissions import IsSupplier, IsBuyer, IsAdmin
 
 class RegisterView(APIView):
 
@@ -170,3 +170,35 @@ def profile_view(request):
 
         'email': request.user.email
     })
+
+
+
+class SupplierDashboardView(APIView):
+
+    permission_classes = [IsAuthenticated, IsSupplier]
+
+    def get(self, request):
+
+        return Response({
+            "message": "Welcome Supplier Dashboard"
+        })
+
+class BuyerDashboardView(APIView):
+
+    permission_classes = [IsAuthenticated, IsBuyer]
+
+    def get(self, request):
+
+        return Response({
+            "message": "Welcome Buyer Dashboard"
+        })
+
+class AdminDashboardView(APIView):
+
+    permission_classes = [IsAuthenticated, IsAdmin]
+
+    def get(self, request):
+
+        return Response({
+            "message": "Welcome Admin Dashboard"
+        })
