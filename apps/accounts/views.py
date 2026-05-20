@@ -2,203 +2,220 @@ from rest_framework.views import APIView
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-from datetime import timedelta
-from .serializers import VerifyOTPSerializer
-from .serializers import RegisterSerializer
-from .utils import generate_otp, send_otp_email
-from .models import OTP,User
-from django.utils import timezone
 from django.contrib.auth import authenticate
-from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import permission_classes
-from .permissions import IsSupplier, IsBuyer, IsAdmin
+from rest_framework_simplejwt.tokens import RefreshToken
+from .serializers import RegisterSerializer
+from .email_utils import (
+    send_registration_email_to_user,
+    send_registration_email_to_admin
+)
+from .models import User
+from .permissions import (
+    IsSupplier,
+    IsBuyer,
+    IsAdmin
+)
+from .mfa_utils import (
+    generate_mfa_secret,
+    generate_qr_code,
+    verify_totp
+)
+
+import pyotp
+
+import qrcode
+
+import base64
+
+from io import BytesIO
+
 
 class RegisterView(APIView):
 
     def post(self, request):
 
-        serializer = RegisterSerializer(data=request.data)
+        serializer = RegisterSerializer(
+            data=request.data
+        )
 
         if serializer.is_valid():
-            user = serializer.save()
-            otp = generate_otp()
 
-            # SAVE OTP IN DATABASE
-            OTP.objects.create(
-                user=user,
-                otp=otp
-            )
-            send_otp_email(user.email, otp)
+            user = serializer.save()
+
+            send_registration_email_to_user(user)
+
+            send_registration_email_to_admin(user)
 
             return Response({
+
                 "message": "User registered successfully"
+
             })
 
         return Response(serializer.errors)
 
 
 
-class VerifyOTPView(APIView):
-
+class VerifyMFAView(APIView):
+    permission_classes = [IsAuthenticated]
     def post(self, request):
-
-        serializer = VerifyOTPSerializer(data=request.data)
-
-        if serializer.is_valid():
-
-            email = serializer.validated_data['email']
-
-            otp = serializer.validated_data['otp']
-
-            try:
-
-                user = User.objects.get(email=email)
-
-            except User.DoesNotExist:
-
-                return Response(
-                    {"message": "User not found"},
-                    status=status.HTTP_404_NOT_FOUND
-                )
-
-            try:
-
-                otp_obj = OTP.objects.filter(
-                    user=user,
-                    otp=otp,
-                    is_used=False
-                ).latest('created_at')
-
-            except OTP.DoesNotExist:
-
-                return Response(
-                    {"message": "Invalid OTP"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            expiry_time = otp_obj.created_at + timedelta(minutes=5)
-
-            if timezone.now() > expiry_time:
-
-                return Response(
-                    {"message": "OTP expired"},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            user.is_verified = True
-
-            user.save()
-
-            otp_obj.is_used = True
-
-            otp_obj.save()
-
-            return Response(
-                {"message": "OTP verified successfully"},
-                status=status.HTTP_200_OK
-            )
-
-        return Response(serializer.errors)
-
-
+        otp = request.data.get("otp")
+        user = request.user
+        is_valid = verify_totp(
+            user.mfa_secret,
+            otp
+        )
+        if not is_valid:
+            return Response({
+                "message": "Invalid MFA Code"
+            }, status=400)
+        user.is_mfa_enabled = True
+        user.save()
+        return Response({
+            "message": "MFA Enabled Successfully"
+        })
 
 
 @api_view(['POST'])
 def login_view(request):
-
     email = request.data.get('email')
     password = request.data.get('password')
-
     try:
         user = User.objects.get(email=email)
-
     except User.DoesNotExist:
-
         return Response({
             'message': 'User not found'
-        }, status=status.HTTP_404_NOT_FOUND)
-
-    if not user.is_verified:
-
-        return Response({
-            'message': 'Email not verified'
-        }, status=status.HTTP_400_BAD_REQUEST)
-
+        }, status=404)
     if not user.is_approved:
-
         return Response({
             'message': 'Admin approval pending'
-        }, status=status.HTTP_400_BAD_REQUEST)
-
+        }, status=400)
     user = authenticate(
         username=user.username,
         password=password
     )
-
     if user is None:
-
         return Response({
             'message': 'Invalid credentials'
-        }, status=status.HTTP_401_UNAUTHORIZED)
+        }, status=401)
+    if user.is_mfa_enabled:
+        return Response({
+            "message": "MFA Required",
+            "mfa_required": True,
+            "user_id": user.id
+        })
 
-    
-    # created the JWT tokens
     refresh = RefreshToken.for_user(user)
-
     return Response({
-
         'message': 'Login successful',
-
         'access_token': str(refresh.access_token),
-
         'refresh_token': str(refresh),
     })
 
 
-
-
-@api_view(['GET'])
-
-@permission_classes([IsAuthenticated])
-
-def profile_view(request):
-
+@api_view(['POST'])
+def verify_login_mfa(request):
+    user_id = request.data.get("user_id")
+    otp = request.data.get("otp")
+    try:
+        user = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return Response({
+            "message": "User not found"
+        }, status=404)
+    is_valid = verify_totp(
+        user.mfa_secret,
+        otp
+    )
+    if not is_valid:
+        return Response({
+            "message": "Invalid MFA Code"
+        }, status=400)
+    refresh = RefreshToken.for_user(user)
     return Response({
-
-        'message': 'Profile accessed',
-
-        'email': request.user.email
+        "message": "Login Successful",
+        "access_token": str(refresh.access_token),
+        "refresh_token": str(refresh),
     })
 
 
 
+
+class SetupMFAView(APIView):
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+
+        user = request.user
+
+        # create secret if not exists
+        if not user.mfa_secret:
+
+            user.generate_mfa_secret()
+
+        totp = pyotp.TOTP(user.mfa_secret)
+
+        uri = totp.provisioning_uri(
+
+            name=user.email,
+
+            issuer_name="MediLinkX"
+        )
+
+        qr = qrcode.make(uri)
+
+        buffer = BytesIO()
+
+        qr.save(buffer, format="PNG")
+
+        qr_base64 = base64.b64encode(
+            buffer.getvalue()
+        ).decode()
+
+        user.is_mfa_enabled = True
+
+        user.save()
+
+        return Response({
+
+            "qr_code": qr_base64
+        })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def profile_view(request):
+    return Response({
+        'message': 'Profile accessed',
+        'email': request.user.email
+    })
+
+
 class SupplierDashboardView(APIView):
-
     permission_classes = [IsAuthenticated, IsSupplier]
-
     def get(self, request):
-
         return Response({
             "message": "Welcome Supplier Dashboard"
         })
 
+
 class BuyerDashboardView(APIView):
 
     permission_classes = [IsAuthenticated, IsBuyer]
-
     def get(self, request):
-
         return Response({
             "message": "Welcome Buyer Dashboard"
         })
 
+
 class AdminDashboardView(APIView):
-
     permission_classes = [IsAuthenticated, IsAdmin]
-
     def get(self, request):
-
         return Response({
             "message": "Welcome Admin Dashboard"
         })
+
+
