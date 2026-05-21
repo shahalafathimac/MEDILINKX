@@ -17,19 +17,7 @@ from .permissions import (
     IsBuyer,
     IsAdmin
 )
-from .mfa_utils import (
-    generate_mfa_secret,
-    generate_qr_code,
-    verify_totp
-)
-
-import pyotp
-
-import qrcode
-
-import base64
-
-from io import BytesIO
+from .mfa_utils import generate_qr_code, verify_totp
 
 
 class RegisterView(APIView):
@@ -156,32 +144,9 @@ class SetupMFAView(APIView):
 
             user.generate_mfa_secret()
 
-        totp = pyotp.TOTP(user.mfa_secret)
-
-        uri = totp.provisioning_uri(
-
-            name=user.email,
-
-            issuer_name="MediLinkX"
-        )
-
-        qr = qrcode.make(uri)
-
-        buffer = BytesIO()
-
-        qr.save(buffer, format="PNG")
-
-        qr_base64 = base64.b64encode(
-            buffer.getvalue()
-        ).decode()
-
-        user.is_mfa_enabled = True
-
-        user.save()
-
         return Response({
 
-            "qr_code": qr_base64
+            "qr_code": generate_qr_code(user)
         })
 
 

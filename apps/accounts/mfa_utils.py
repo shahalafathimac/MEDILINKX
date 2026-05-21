@@ -24,5 +24,8 @@ def generate_qr_code(user):
 
 
 def verify_totp(secret, otp):
+    if not secret or not otp:
+        return False
+
     totp = pyotp.TOTP(secret)
     return totp.verify(otp)
