@@ -1,0 +1,7 @@
+.env
+djvenv/
+venv/
+__pycache__/
+*.pyc
+db.sqlite3
+
